@@ -4,6 +4,7 @@
  *
  */
 
+#include <ctype.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -16,22 +17,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-static const char * escapes[] = {
-        "[=[[:digit:]]\\+h",
-#if 0
-        "[\\?\\*-\\*[[:digit:]]\\+;-\\*[[:digit:]]\\+[KHJfhlmstu;]",
-        "[\\?\\*-\\*[[:digit:]]\\+[KHJfhlmstu;]",
-        "[\\?\\*[KHJfhlmstu;]",
-        "[[:digit:]-]\\+[H]",
-        "(B[[:digit:]]\\+[H]",
-        "][[:digit:]-]\\+[;]",
-#endif
-        NULL
-};
-
 #define debug getenv("UNTTY_DEBUG")
-
-static size_t n_escapes = sizeof(escapes) / sizeof(escapes[0]);
 
 #define ESC '\x1b'
 #define SPC '\x20'
@@ -47,17 +33,123 @@ usage(int rc)
         exit(rc);
 }
 
+typedef enum states {
+        NEED_ESCAPE,
+        NEED_MATCH,
+        DONE
+} state_t;
+
+static void
+print_buf(FILE *out, char *buf, ssize_t pos, char escape)
+{
+        for (int i = 0; i < pos; i++) {
+                if (buf[i] != escape || isprint(escape)) {
+                        fputc(buf[i], out);
+                        continue;
+                }
+
+                if (isprint(escape))
+                        fputc(escape, out);
+                else if (debug)
+                        fprintf(out, "\\x%02hhx", escape);
+        }
+
+        fflush(out);
+}
+
+static const char * escapes[] = {
+        "[=[[:digit:]]\\+h",
+        "[\\?\\*[[:digit:]]\\+[l]",
+        "[[[:digit:]]\\+;[[:digit:]]\\+[Hmr ]",
+#if 0
+        "[\\?\\*-\\*[[:digit:]]\\+;-\\*[[:digit:]]\\+[KHJfhlmstu;]",
+        "[\\?\\*-\\*[[:digit:]]\\+[KHJfhlmstu;]",
+        "[\\?\\*[KHJfhlmstu;]",
+        "[[:digit:]-]\\+[H]",
+        "(B[[:digit:]]\\+[H]",
+        "][[:digit:]-]\\+[;]",
+#endif
+        NULL
+};
+static size_t n_escapes = sizeof(escapes) / sizeof(escapes[0]);
+
+static void
+setup_regexps(regex_t *regexps)
+{
+        char errbuf[1024];
+        memset(regexps, 0, sizeof(*regexps) * n_escapes);
+
+        for (unsigned int i = 0; escapes[i] != NULL; i++) {
+                int rc = regcomp(&regexps[i], escapes[i], 0);
+                if (rc != 0) {
+                        regerror(rc, &regexps[i], errbuf, sizeof(errbuf));
+                        errx(1, "Could not compile regexp \"%s\": %s", escapes[i], errbuf);
+                }
+        }
+}
+
+static ssize_t
+match(regex_t *regexps, char *buf, ssize_t pos)
+{
+        char errbuf[1024];
+        regmatch_t matches[80];
+        ssize_t ret = -1;
+        int matched = -1;
+
+        memset(matches, 0, sizeof(matches));
+        for (unsigned int i = 0; escapes[i] != NULL; i++) {
+                int rc;
+
+                if (debug)
+                        fprintf(stderr, "pos:%zd str:\"%s\" regexp:\"%s\"\n", pos, buf+1, escapes[i]);
+                rc = regexec(&regexps[i], buf+1, pos-1, matches, 0);
+                if (rc != 0 && rc != REG_NOMATCH) {
+                        regerror(rc, &regexps[i], errbuf, sizeof(errbuf));
+                        errx(3, "Could not execute regexp \"%s\": %s", escapes[i], errbuf);
+                }
+                if (rc == REG_NOMATCH)
+                        continue;
+                if (debug)
+                        printf("found a match: %s\n", escapes[i]);
+                for (int j = 0; matches[j].rm_so != -1; j++)
+                {
+                        int mpos = matches[j].rm_eo + 1;
+                        if (mpos > ret) {
+                                matched = i;
+                                ret = mpos;
+                        }
+                }
+        }
+        if (ret >= 0)
+                ret++;
+        if (debug && matched > 0)
+                printf("Using longest match at %zd chars: %s\n", ret, escapes[matched]);
+
+        return ret;
+}
+
+static char *
+get_state_name(state_t state)
+{
+        static char * state_names[] = {
+                "NEED_ESCAPE",
+                "NEED_MATCH",
+                "DONE"
+        };
+        return state_names[state];
+}
+
 int
 main(int argc, char *argv[])
 {
-        regex_t regexps[n_escapes];
-        char errbuf[1024];
         char buf[80];
         ssize_t pos = 0, esc = -1;
-        regmatch_t matches[80];
+        regex_t regexps[n_escapes];
         char escape = ESC;
-        int fd = STDIN_FILENO;
+        int infd = STDIN_FILENO;
+        FILE *out = stdout;
         char *filename = NULL;
+        state_t state = NEED_ESCAPE;
 
         for (int i = 1; i < argc && argv[i] != 0; i++) {
                 if (!strcmp(argv[i], "--help") ||
@@ -75,8 +167,8 @@ main(int argc, char *argv[])
 
                 if (!filename) {
                         filename = argv[i];
-                        fd = open(filename, O_RDONLY);
-                        if (fd < 0)
+                        infd = open(filename, O_RDONLY);
+                        if (infd < 0)
                                 err(1, "Could not open \"%s\"", filename);
                         continue;
                 }
@@ -84,121 +176,95 @@ main(int argc, char *argv[])
                 errx(1, "Unknown argument: \"%s\"", argv[i]);
         }
 
-        memset(regexps, 0, sizeof(regexps));
+        setup_regexps(regexps);
 
-        for (unsigned int i = 0; escapes[i] != NULL; i++) {
-                int rc = regcomp(&regexps[i], escapes[i], 0);
-                if (rc != 0) {
-                        regerror(rc, &regexps[i], errbuf, sizeof(errbuf));
-                        errx(1, "Could not compile regexp \"%s\": %s", escapes[i], errbuf);
-                }
-        }
-
-        while (true) {
+        while (state != DONE) {
                 int rc;
                 char c;
 
-                if (pos >= 78) {
-                        if (esc > 0) {
-                                write(STDOUT_FILENO, buf, esc);
-                                memmove(buf+esc, buf, 80 - esc);
-                                pos = 80 - esc;
-                                esc = 0;
-                        } else if (esc == 0) {
-                                if (escape == ESC || debug)
-                                        warnx("Escape unmatched at %zd characters; ignoring", pos);
-                                memmove(buf+1, buf, 79);
-                                pos -= 1;
-                        } else {
-                                write(STDOUT_FILENO, buf, pos);
-                                pos = 0;
-                        }
-                }
-                rc = read(fd, &c, 1);
-                if (rc == 0) {
-                        /* we've got a character now */
-                        if (esc >= 0) {
-                                write(STDOUT_FILENO, buf, esc);
-                                write(STDOUT_FILENO, "\\x1b", 4);
-                        } else {
-                                esc = 0;
-                        }
-                        write(STDOUT_FILENO, &buf[esc+1], pos - esc);
-                        esc = -1;
-                        break;
-                } else if (rc < 0) {
-                        if (errno == EAGAIN || errno == EINTR)
-                                continue;
-                        err(2, "Could not read from stdin");
-                }
-                if (c == escape) {
-                        if (esc == 0 && pos == 1)
-                                continue;
-                        if (esc >= 0) {
-                                if (escape == ESC || debug) {
-                                        warnx("Found escape while parsing escape sequence");
-                                        printf("\\x%02hhx", escape);
-                                } else if (!debug) {
-                                        printf("%c", escape);
-                                }
-                                fflush(stdout);
-                                write(STDOUT_FILENO, buf, esc);
-                                if (pos > esc)
-                                        write(STDOUT_FILENO, &buf[esc+1], pos - esc - 1);
-                        } else if (pos > 0) {
-                                write(STDOUT_FILENO, buf, pos);
-                        }
-                        esc = 0;
-                        pos = 1;
-                        buf[0] = escape;
-                        buf[1] = 0;
-                        continue;
-                } else if (esc < 0) {
-                        if (c != CR)
-                                write(STDOUT_FILENO, (char *)&c, 1);
-                        continue;
-                } else if (c == CR) {
-                        continue;
-                }
-
-                buf[pos++] = c;
-                buf[pos] = '\0';
-
-                memset(matches, 0, sizeof(matches));
-                for (unsigned int i = 0; escapes[i] != NULL; i++) {
-                        bool found = false;
-                        int j;
-                        if (debug)
-                            fprintf(stderr, "pos:%zd esc:%zd str:\"%s\" regexp:\"%s\"\n", pos, esc, &buf[esc+1], escapes[i]);
-                        rc = regexec(&regexps[i], &buf[esc+1], 80, matches, 0);
-                        if (rc != 0 && rc != REG_NOMATCH) {
-                                regerror(rc, &regexps[i], errbuf, sizeof(errbuf));
-                                errx(3, "Could not execute regexp \"%s\": %s", escapes[i], errbuf);
-                        }
-                        if (rc == REG_NOMATCH)
-                                continue;
-                        if (debug)
-                                printf("found a match\n");
-                        for (j = 0; j < 80 && matches[j].rm_so != -1; j++)
-                        //        ;
-                        //for (--j; j >= 0; j--) 
-                        {
-                                int mpos = matches[j].rm_eo + 1;
-                                write(STDOUT_FILENO, buf+mpos, pos-mpos);
+                rc = read(infd, &c, 1);
+                if (rc < 0) {
+                        if (errno == EAGAIN || errno == EINTR) {
                                 if (debug)
-                                        write(STDOUT_FILENO, "\n", 1);
-                                memmove(buf, buf+mpos, sizeof(buf) - mpos);
-                                pos = 0;
-                                esc = -1;
-                                found = true;
-                                break;
+                                        warnx("read() == %d; trying again.", rc);
+                                continue;
                         }
-                        if (found)
-                                break;
+                        err(2, "Could not read from stdin");
+                } else if (rc == 0) {
+                        if (debug)
+                                warnx("%s->DONE: read() == 0", get_state_name(state));
+                        state = DONE;
+                }
+
+                switch (state) {
+                case NEED_ESCAPE:
+                        if (c == escape) {
+                                buf[pos++] = c;
+                                buf[pos] = '\0';
+                                if (debug)
+                                        warnx("%s->NEED_MATCH: Got ESC (\\x%02hhx)", get_state_name(state), escape);
+                                state = NEED_MATCH;
+                        } else {
+                                fputc(c, out);
+                        }
+                        continue;
+
+                case NEED_MATCH:
+                        buf[pos++] = c;
+                        buf[pos] = '\0';
+
+                        if (pos <= 1)
+                                continue;
+
+                        rc = match(regexps, buf, pos);
+                        if (rc < 0) {
+                                if (c == escape) {
+                                        if (debug)
+                                                warnx("%s->NEED_MATCH: Found escape when looking for a match; advancing %zd.",
+                                                      get_state_name(state), pos);
+                                        print_buf(out, buf, pos - 1, escape);
+                                        pos = 0;
+                                        buf[pos++] = c;
+                                        buf[pos] = '\0';
+                                        continue;
+                                }
+
+                                if (pos >= 16) {
+                                        if (debug)
+                                                warnx("%s->NEED_ESCAPE: Escape unmatched at %zd characters",
+                                                      get_state_name(state), pos);
+
+                                        print_buf(out, buf, pos, escape);
+                                        pos = 0;
+                                        buf[pos] = '\0';
+                                        state = NEED_ESCAPE;
+                                }
+                                continue;
+                        }
+
+                        pos -= rc;
+                        if (pos > 0) {
+                                memmove(buf, buf+rc, pos);
+                        } else {
+                                if (debug)
+                                        warnx("%s->NEED_ESCAPE: matched %d characters", get_state_name(state), rc);
+                                state = NEED_ESCAPE;
+                        }
+                        buf[pos] = '\0';
+                        continue;
+
+                case DONE:
+                        if (pos)
+                                print_buf(out, buf, pos, escape);
+                        continue;
                 }
         }
         if (esc >= 0 && escape == ESC)
                 warnx("Unmatched escape at end of input (%zd)", esc);
+
+        for (unsigned int i = 0; i < n_escapes; i++) {
+                regfree(&regexps[i]);
+        }
 
         return 0;
 }
