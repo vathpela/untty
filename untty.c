@@ -49,7 +49,7 @@ usage(int rc)
 {
         FILE *out = rc == 0 ? stdout : stderr;
 
-        fprintf(out, "Usage: untty [--space-as-escape] [<filename>]\n");
+        fprintf(out, "Usage: untty [--space-as-escape|-s] [--debug|-d] [<filename>]\n");
 
         exit(rc);
 }
