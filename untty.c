@@ -12,6 +12,7 @@
 #include <regex.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -89,23 +90,11 @@ print_buf(FILE *out, char *buf, ssize_t pos)
         fflush(out);
 }
 
-static const char * default_exprs[] = {
-        "[=[[:digit:]]\\+h",
-        "[[[:digit:]]\\+[Jlm]",
-        "[\\?[[:digit:]]\\+[Jlm]",
-        "[[[:digit:]]\\+;[[:digit:]]\\+[Hmr]",
-        "\\([[[:digit:]]\\+;[[:digit:]]\\+\\) ", // sometimes console(1) logs this
-#if 0
-        "[\\?\\*-\\*[[:digit:]]\\+;-\\*[[:digit:]]\\+[KHJfhlmstu;]",
-        "[\\?\\*-\\*[[:digit:]]\\+[KHJfhlmstu;]",
-        "[\\?\\*[KHJfhlmstu;]",
-        "[[:digit:]-]\\+[H]",
-        "(B[[:digit:]]\\+[H]",
-        "][[:digit:]-]\\+[;]",
-#endif
-        NULL
-};
-static size_t n_default_exprs = sizeof(default_exprs) / sizeof(default_exprs[0]);
+extern const char *default_exprs;
+extern const uint64_t default_exprs_size;
+
+static void *exprs_map;
+static uint64_t exprs_map_size;
 
 static void
 setup_regexps(regex_t **regexps_p, size_t *n_exprs_p, const char ***exprs_p)
@@ -117,6 +106,8 @@ setup_regexps(regex_t **regexps_p, size_t *n_exprs_p, const char ***exprs_p)
         regex_t *regexps;
         const char **exprs = NULL;
         size_t n_exprs = 0;
+        char *data, *cur;
+        size_t allocation = 0, size;
 
         filename = getenv("UNTTY_ESCAPE_EXPRS");
         if (filename) {
@@ -148,70 +139,74 @@ setup_regexps(regex_t **regexps_p, size_t *n_exprs_p, const char ***exprs_p)
                 if (errno != ENOENT)
                         err(1, "Could not open \"%s\"", filename);
 
-                n_exprs = *n_exprs_p = n_default_exprs;
-                exprs = *exprs_p = calloc(n_default_exprs, sizeof(char *));
-                if (!exprs)
-                        err(1, "Could not allocate memory");
-
-                for (size_t i = 0; i < n_exprs; i++)
-                        exprs[i] = default_exprs[i];
+                cur = data = (char *)default_exprs;
+                size = default_exprs_size;
+                fputs("======= exprs ========\n", stderr);
+                fflush(stderr);
+                fwrite(default_exprs, 1, default_exprs_size, stderr);
+                fputs("======= exprs ========\n", stderr);
+                fflush(stderr);
         } else {
                 struct stat sb;
-                char *data, *cur;
-                size_t allocation = 0;
 
                 rc = fstat(infd, &sb);
                 if (rc < 0)
                         err(1, "Couldn't get file size for \"%s\"", filename);
 
-                cur = data = mmap(NULL, sb.st_size + 1, PROT_READ|PROT_WRITE,
-                                  MAP_PRIVATE, infd, 0);
+                size = exprs_map_size = sb.st_size + 1;
+                exprs_map = cur = data = mmap(NULL, size, PROT_READ|PROT_WRITE,
+                                              MAP_PRIVATE, infd, 0);
                 if (!data)
                         err(1, "Couldn't map \"%s\"", filename);
 
                 close(infd);
 
                 data[sb.st_size] = 0;
+        }
 
-                n_exprs = 0;
-                exprs = calloc(512, sizeof(char *));
-                if (!exprs)
-                        err(1, "Could not allocate memory");
+        n_exprs = 0;
+        exprs = calloc(512, sizeof(char *));
+        if (!exprs)
+                err(1, "Could not allocate memory");
 
-                for (ssize_t limit = sb.st_size, addend = 0; cur && limit; limit -= addend) {
-                        char *next = memchr(cur, '\n', limit);
+        for (ssize_t limit = size, addend = 0; cur && limit; limit -= addend) {
+                char *next = memchr(cur, '\n', limit);
 
-                        if (next) {
-                                *next = 0;
-                                next++;
-                        }
+                if (limit == 1 && cur[0] == 0)
+                        break;
 
-                        if (limit == 1 && cur[0] == 0) {
-                                munmap(cur, 1);
-                        }
-                        if (n_exprs % 512 == 0) {
-                                allocation += 512;
-                                exprs = reallocarray(exprs, allocation, sizeof(char *));
-                                if (!exprs)
-                                        err(1, "Could not allocate memory");
-                        }
-                        exprs[n_exprs] = cur;
-                        n_exprs += 1;
-                        addend = next ? next - cur : limit;
-                        cur = next;
+                if (next) {
+                        *next = 0;
+                        next++;
                 }
 
-                *n_exprs_p = n_exprs;
-                *exprs_p = exprs;
+                if (n_exprs % 512 == 0) {
+                        allocation += 512;
+                        exprs = reallocarray(exprs, allocation, sizeof(char *));
+                        if (!exprs)
+                                err(1, "Could not allocate memory");
+                }
+
+                if (cur[0] != '#') {
+                        exprs[n_exprs] = cur;
+                        n_exprs += 1;
+                }
+                addend = next ? next - cur : limit;
+                cur = next;
         }
+
+        *n_exprs_p = n_exprs;
+        *exprs_p = exprs;
 
         regexps = calloc(n_exprs, sizeof(*regexps));
         if (!regexps)
                 err(1, "Could not allocate memory");
 
         for (unsigned int i = 0; exprs[i] != NULL; i++) {
-                int rc = regcomp(&regexps[i], exprs[i], 0);
+                int rc;
+
                 debug("expr[%u]:%s", i, exprs[i]);
+                rc = regcomp(&regexps[i], exprs[i], 0);
                 if (rc != 0) {
                         regerror(rc, &regexps[i], errbuf, sizeof(errbuf));
                         errx(1, "Could not compile regexp \"%s\": %s", exprs[i], errbuf);
@@ -477,14 +472,8 @@ main(int argc, char *argv[])
 
         for (unsigned int i = 0; i < n_exprs; i++)
                 regfree(&regexps[i]);
-        if (n_exprs && exprs[0] != default_exprs[0]) {
-                const char *start = exprs[0];
-                const char *end = exprs[n_exprs-1];
-
-                end += strlen(end) + 1;
-
-                munmap((void *)start, end - start);
-        }
+        if (exprs_map && exprs_map_size)
+                munmap((void *)exprs_map, exprs_map_size);
         free(exprs);
         free(regexps);
 

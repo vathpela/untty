@@ -1,0 +1,6 @@
+[=[[:digit:]]\+h
+[[[:digit:]]\+[Jlm]
+[\?[[:digit:]]\+[Jlm]
+[[[:digit:]]\+;[[:digit:]]\+[Hmr]
+# sometimes console(1) logs this (note the blank space at the end)
+\([[[:digit:]]\+;[[:digit:]]\+\) 

@@ -23,6 +23,9 @@ CCLDFLAGS=-Wl,-Og,-g3 \
 
 all: $(TARGETS)
 
+untty : untty.c exprs.S
+untty : | escape_exprs
+
 % : %.o
 	$(CC) $(CFLAGS) $(CCLDFLAGS) -o $@ $^
 
