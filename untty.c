@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 extern char *__progname;
+#define UNUSED __attribute__((__unused__))
 
 static bool debug_arg_ = false;
 #define debug_arg ({ if(debug_arg_ || getenv("UNTTY_DEBUG")) debug_arg_ = true; debug_arg_; })
@@ -82,7 +83,7 @@ print_buf(FILE *out, char *buf, ssize_t pos)
         }
 }
 
-static const char * escapes[] = {
+static const char * default_escapes[] = {
         "[=[[:digit:]]\\+h",
         "[[[:digit:]]\\+[Jlm]",
         "[\\?[[:digit:]]\\+[Jlm]",
@@ -98,12 +99,18 @@ static const char * escapes[] = {
 #endif
         NULL
 };
-static size_t n_escapes = sizeof(escapes) / sizeof(escapes[0]);
+static size_t n_default_escapes = sizeof(default_escapes) / sizeof(default_escapes[0]);
 
 static void
-setup_regexps(regex_t *regexps)
+setup_regexps(regex_t *regexps, size_t n_escapes, const char **escapes)
 {
         char errbuf[1024];
+
+        if (n_escapes == 0 || escapes == NULL) {
+                n_escapes = n_default_escapes;
+                escapes = default_escapes;
+        }
+
         memset(regexps, 0, sizeof(*regexps) * n_escapes);
 
         for (unsigned int i = 0; escapes[i] != NULL; i++) {
@@ -132,7 +139,7 @@ static char *printables(char *str)
 }
 
 static ssize_t
-match(regex_t *regexps, char *buf, ssize_t pos)
+match(regex_t *regexps, char *buf, ssize_t pos, const char **escapes)
 {
         char errbuf[1024];
         regmatch_t matches[80];
@@ -172,6 +179,13 @@ match(regex_t *regexps, char *buf, ssize_t pos)
         return ret;
 }
 
+static int
+parse_escapes(size_t *n_escapes_p UNUSED, const char ***escapes_p UNUSED)
+{
+        errno = ENOENT;
+        return -1;
+}
+
 static char *
 get_state_name(state_t state)
 {
@@ -188,12 +202,26 @@ main(int argc, char *argv[])
 {
         char buf[80];
         ssize_t pos = 0, esc = -1;
-        regex_t regexps[n_escapes];
+        regex_t *regexps;
         char escape = ESC;
         int infd = STDIN_FILENO;
         FILE *out = stdout;
         char *filename = NULL;
         state_t state = NEED_ESCAPE;
+        int rc;
+
+        size_t n_escapes;
+        const char **escapes;
+
+        rc = parse_escapes(&n_escapes, &escapes);
+        if (rc < 0 && errno == ENOENT) {
+                escapes = default_escapes;
+                n_escapes = n_default_escapes;
+        }
+
+        regexps = calloc(n_escapes, sizeof(*regexps));
+        if (!regexps)
+                err(1, "Could not allocate memory");
 
         for (int i = 1; i < argc && argv[i] != 0; i++) {
                 if (!strcmp(argv[i], "--help") ||
@@ -226,7 +254,7 @@ main(int argc, char *argv[])
                 errx(1, "Unknown argument: \"%s\"", argv[i]);
         }
 
-        setup_regexps(regexps);
+        setup_regexps(regexps, n_escapes, escapes);
 
         while (state != DONE) {
                 int rc;
@@ -280,7 +308,7 @@ main(int argc, char *argv[])
                         if (pos <= 1)
                                 continue;
 
-                        rc = match(regexps, buf, pos);
+                        rc = match(regexps, buf, pos, escapes);
                         if (rc < 0) {
                                 if (c == escape && pos > 1) {
                                         debug("%s->NEED_MATCH: Found escape when looking for a match; advancing %zd.",
@@ -356,6 +384,7 @@ main(int argc, char *argv[])
         for (unsigned int i = 0; i < n_escapes; i++) {
                 regfree(&regexps[i]);
         }
+        free(regexps);
 
         return 0;
 }
