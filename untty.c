@@ -60,6 +60,7 @@ usage(int rc)
 
 typedef enum states {
         NEED_ESCAPE,
+        NEED_ESCAPE_HAVE_CR,
         NEED_MATCH,
         DONE
 } state_t;
@@ -279,6 +280,7 @@ get_state_name(state_t state)
 {
         static char * state_names[] = {
                 "NEED_ESCAPE",
+                "NEED_ESCAPE_HAVE_CR",
                 "NEED_MATCH",
                 "DONE"
         };
@@ -363,6 +365,15 @@ main(int argc, char *argv[])
                 }
 
                 switch (state) {
+                case NEED_ESCAPE_HAVE_CR:
+                        fputc(NL, out);
+                        debug("%s->NEED_ESCAPE: found CR/NL.",
+                              get_state_name(state));
+                        state = NEED_ESCAPE;
+                        if (c == NL || c == CR)
+                                continue;
+
+                        /* fall through */
                 case NEED_ESCAPE:
                         if (c == escape) {
                                 buf[pos++] = c;
@@ -371,7 +382,10 @@ main(int argc, char *argv[])
                                       get_state_name(state), escape);
                                 state = NEED_MATCH;
                         } else {
-                                fputc(c, out);
+                                if (c == CR)
+                                        state = NEED_ESCAPE_HAVE_CR;
+                                else
+                                        fputc(c, out);
                         }
                         continue;
 
