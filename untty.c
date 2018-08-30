@@ -311,8 +311,13 @@ main(int argc, char *argv[])
                 }
 
                 if (!strcmp(argv[i], "--version")) {
-                        printf("1\n");
-                        continue;
+                        printf("untty 1\n");
+                        exit(0);
+                }
+
+                if (!strcmp(argv[i], "--show-defaults")) {
+                        fwrite(default_exprs, 1, default_exprs_size-1, stdout);
+                        exit(0);
                 }
 
                 if (!strcmp(argv[i], "-d") ||
