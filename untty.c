@@ -310,6 +310,11 @@ main(int argc, char *argv[])
                         continue; // never happens
                 }
 
+                if (!strcmp(argv[i], "--version")) {
+                        printf("1\n");
+                        continue;
+                }
+
                 if (!strcmp(argv[i], "-d") ||
                     !strcmp(argv[i], "--debug")) {
 #if 0
