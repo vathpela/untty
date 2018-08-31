@@ -20,27 +20,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "debug.h"
 #include "compiler.h"
 
-static bool debug_arg_ = false;
-#define debug_arg ({ if(debug_arg_ || getenv("UNTTY_DEBUG")) debug_arg_ = true; debug_arg_; })
-#define debug(fmt, ...) ({ char *f_ = __FILE__; int l_ = __LINE__;              \
-                if (debug_arg) {                                                \
-                        char *s_ = NULL;                                        \
-                        int rc_;                                                \
-                        fprintf(stderr, "%s: %s:%d ", __progname, f_, l_);      \
-                        rc_ = asprintf(&s_, fmt, ##__VA_ARGS__);                \
-                        for (int i_ = 0; rc_ > 0 && s_ && s_[i_]; i_++) {       \
-                                if (isprint(s_[i_]))                            \
-                                        fprintf(stderr, "%c", s_[i_]);          \
-                                else                                            \
-                                        fprintf(stderr, "\\x%02hhx", s_[i_]);   \
-                        }                                                       \
-                        if (s_)                                                 \
-                                free(s_);                                       \
-                        fprintf(stderr, "\n");                                  \
-                }                                                               \
-        })
+bool debug_arg_ = false;
+bool debug_once_ = true;
 
 #define ESC '\x1b'
 #define SPC '\x20'
@@ -321,9 +305,6 @@ main(int argc, char *argv[])
 
                 if (!strcmp(argv[i], "-d") ||
                     !strcmp(argv[i], "--debug")) {
-                        setlinebuf(stdout);
-                        setlinebuf(stderr);
-
                         debug_arg_ = true;
                         continue;
                 }
