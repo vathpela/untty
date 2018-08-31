@@ -2,5 +2,7 @@
 [[[:digit:]]\+[Jlm]
 [\?[[:digit:]]\+[Jlm]
 [[[:digit:]]\+;[[:digit:]]\+[Hmr]
+# systemd's startup shows "\x1b[K[**    ] A start job is running..."
+\[K
 # sometimes console(1) logs this (note the blank space at the end)
 \([[[:digit:]]\+;[[:digit:]]\+\) 
