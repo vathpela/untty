@@ -20,8 +20,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-extern char *__progname;
-#define UNUSED __attribute__((__unused__))
+#include "compiler.h"
 
 static bool debug_arg_ = false;
 #define debug_arg ({ if(debug_arg_ || getenv("UNTTY_DEBUG")) debug_arg_ = true; debug_arg_; })
@@ -48,7 +47,7 @@ static bool debug_arg_ = false;
 #define CR '\x0d'
 #define NL '\x0a'
 
-void __attribute__((__noreturn__))
+void NORETURN
 usage(int rc)
 {
         FILE *out = rc == 0 ? stdout : stderr;
