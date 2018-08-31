@@ -2,3 +2,5 @@
 *.o
 untty
 *.[0123456789].gz
+console.log
+screenlog.[0123456789]
