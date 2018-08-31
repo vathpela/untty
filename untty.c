@@ -36,8 +36,12 @@ usage(int rc)
 {
         FILE *out = rc == 0 ? stdout : stderr;
 
-        fprintf(out, "Usage: untty [--space-as-escape|-s] [--debug|-d] [<filename>]\n");
-
+        fprintf(out, "Usage: untty [options] [<filename>]\n");
+        fprintf(out, "Options:\n");
+        fprintf(out, "  --show-defaults                 Show default regexps for escape codes\n");
+        fprintf(out, "  --space-as-escape|-s            Use SPC instead of \\x1b as ESC\n");
+        fprintf(out, "  --debug|-d                      Print debugging information on stderr\n");
+        fprintf(out, "  --expression-file|-e <EXPRS>    Use regexps from <EXPRS> as escape codes\n");
         exit(rc);
 }
 
@@ -81,22 +85,26 @@ static void *exprs_map;
 static uint64_t exprs_map_size;
 
 static void
-setup_regexps(regex_t **regexps_p, size_t *n_exprs_p, const char ***exprs_p)
+setup_regexps(char *filename_in, regex_t **regexps_p, size_t *n_exprs_p, const char ***exprs_p)
 {
         char errbuf[1024];
         int infd;
-        char *filename = NULL;
         int rc;
         regex_t *regexps;
         const char **exprs = NULL;
         size_t n_exprs = 0;
         char *data, *cur;
         size_t allocation = 0, size;
+        char *filename = NULL;
 
-        filename = getenv("UNTTY_ESCAPE_EXPRS");
-        if (filename) {
-                filename = strdup(filename);
+        if (filename_in) {
+                filename = strdup(filename_in);
         } else {
+                filename = getenv("UNTTY_ESCAPE_EXPRS");
+                if (filename)
+                        filename = strdup(filename);
+        }
+        if (!filename) {
                 char *homedir = getenv("$HOME");
 
                 if (!homedir) {
@@ -120,15 +128,15 @@ setup_regexps(regex_t **regexps_p, size_t *n_exprs_p, const char ***exprs_p)
 
         infd = open(filename, O_RDONLY);
         if (infd < 0) {
-                if (errno != ENOENT)
+                if (errno != ENOENT || filename_in != NULL)
                         err(1, "Could not open \"%s\"", filename);
 
                 cur = data = (char *)default_exprs;
                 size = default_exprs_size;
-                fputs("======= exprs ========\n", stderr);
+                fputs("======= default exprs ========\n", stderr);
                 fflush(stderr);
                 fwrite(default_exprs, 1, default_exprs_size, stderr);
-                fputs("======= exprs ========\n", stderr);
+                fputs("======= default exprs ========\n", stderr);
                 fflush(stderr);
         } else {
                 struct stat sb;
@@ -280,6 +288,7 @@ main(int argc, char *argv[])
         int infd = STDIN_FILENO;
         FILE *out = stdout;
         char *filename = NULL;
+        char *exprfile = NULL;
         state_t state = NEED_ESCAPE;
 
         size_t n_exprs;
@@ -315,6 +324,14 @@ main(int argc, char *argv[])
                         continue;
                 }
 
+                if (!strcmp(argv[i], "-e") ||
+                    !strcmp(argv[i], "--expression-file")) {
+                        if (i == argc-1)
+                                usage(1);
+                        exprfile = argv[++i];
+                        continue;
+                }
+
                 if (!filename) {
                         filename = argv[i];
                         infd = open(filename, O_RDONLY);
@@ -326,7 +343,7 @@ main(int argc, char *argv[])
                 errx(1, "Unknown argument: \"%s\"", argv[i]);
         }
 
-        setup_regexps(&regexps, &n_exprs, &exprs);
+        setup_regexps(exprfile, &regexps, &n_exprs, &exprs);
 
         while (state != DONE) {
                 int rc;
