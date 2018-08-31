@@ -322,13 +322,8 @@ main(int argc, char *argv[])
 
                 if (!strcmp(argv[i], "-d") ||
                     !strcmp(argv[i], "--debug")) {
-#if 0
-                        FILE *sigh = fdopen(STDERR_FILENO, "a");
-                        stderr = sigh;
-#else
                         setlinebuf(stdout);
                         setlinebuf(stderr);
-#endif
 
                         debug_arg_ = true;
                         continue;
